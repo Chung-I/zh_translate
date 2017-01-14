@@ -289,13 +289,13 @@ class Seq2SeqModel(object):
       else:
         self.outputs, self.losses, self.KL_divergences = seq2seq.variational_decoder_with_buckets(
             self.means, self.logvars, self.decoder_inputs, targets,
-            self.target_weights, buckets, decoder,
+            self.target_weights, buckets, decoder_f,
             latent_dec_f, kl_f, sample_f, iaf,
             softmax_loss_function=softmax_loss_function)
     else:
       self.outputs, self.losses = seq2seq.autoencoder_with_buckets(
           self.encoder_inputs, self.decoder_inputs, targets,
-          self.target_weights, buckets, encoder_f, decoder,
+          self.target_weights, buckets, encoder_f, decoder_f,
           softmax_loss_function=softmax_loss_function)
     # If we use output projection, we need to project outputs for decoding.
     if output_projection is not None:

@@ -419,8 +419,7 @@ def encode_decode(sess, model, config):
         for i in range(num_steps-1, -1, -1):
           for kk in range(beam_size):
             paths[kk].append(symbol[i][curr[kk]])
-              curr[kk] = path[i][curr[kk]]
-        recos = set()
+            curr[kk] = path[i][curr[kk]]
         for kk in range(beam_size):
           output = [int(logit)  for logit in paths[kk][::-1]]
 
@@ -551,6 +550,8 @@ class Struct(object):
       self.__dict__.update({ "adamax": False })
     if not self.__dict__.get("elu"):
       self.__dict__.update({ "elu": False })
+    if not self.__dict__.get("activation"):
+      self.__dict__.update({ "activation": "prelu" })
 
 
 def main(_):
