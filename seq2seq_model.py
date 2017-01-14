@@ -28,7 +28,6 @@ import tensorflow as tf
 import data_utils
 import seq2seq
 import pdb
-from bnlstm import BNLSTMCell
 from tf_beam_decoder import BeamDecoder
 from tensorflow.python.ops import variable_scope
 
@@ -276,10 +275,6 @@ class Seq2SeqModel(object):
       kl_f = seq2seq.KL_divergence
     else:
       kl_f = lower_bounded_kl_f
-    if beam_size > 1:
-      decoder = beam_decoder_f
-    else:
-      decoder = decoder_f
     # Training outputs and losses.
     if dnn_in_between:
       self.means, self.logvars = seq2seq.variational_encoder_with_buckets(
@@ -288,7 +283,7 @@ class Seq2SeqModel(object):
       if forward_only and beam_size > 1:
         self.outputs, self.beam_path, self.beam_symbols, self.losses, self.KL_divergences = seq2seq.variational_beam_decoder_with_buckets(
             self.means, self.logvars, self.decoder_inputs, targets,
-            self.target_weights, buckets, decoder,
+            self.target_weights, buckets, decoder_f,
             latent_dec_f, kl_f, sample_f, iaf,
             softmax_loss_function=softmax_loss_function)
       else:
