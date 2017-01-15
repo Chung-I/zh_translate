@@ -55,6 +55,30 @@ tf.app.flags.DEFINE_string("do", "train", "what to do. accepts train, interpolat
 
 FLAGS = tf.app.flags.FLAGS
 
+def parametric_relu(_x):
+  with tf.variable_scope("prelu"):
+    alphas = tf.get_variable('alpha', _x.get_shape()[-1],
+      initializer=tf.constant_initializer(0.0), dtype=tf.float32)
+    pos = tf.nn.relu(_x)
+    neg = alphas * (_x - abs(_x)) * 0.5
+  return pos + neg
+
+def shift_elu(x):
+  with tf.variable_scope("shift_elu"):
+    shift = tf.get_variable("shift", shape=[], initializer=tf.constant_initializer(1.0), dtype=tf.float32)
+    return tf.nn.elu(x + shift) - shift
+
+def leakyRelu(_x):
+  with tf.variable_scope("leakyRelu"):
+    alphas = tf.get_variable("alpha", shape=[], initializer=tf.constant_initializer(-0.5), trainable=False, dtype=tf.float32)
+    pos = tf.nn.relu(_x)
+    neg = alphas * (_x - abs(_x)) * 0.5
+  return pos + neg
+
+def tanh2(x):
+  with tf.variable_scope("2tanh2"):
+   return 2.0 * tf.nn.tanh(tf.truediv(x,2.0))
+
 
 def maybe_create_statistics(config):
   stat_file_name = "stats/" + FLAGS.model_name + ".json" 
@@ -126,7 +150,19 @@ def create_model(session, config, forward_only):
   """Create translation model and initialize or load parameters in session."""
   dtype = tf.float32
   optimizer = tf.train.AdamOptimizer(config.learning_rate)
-  activation = tf.nn.elu if config.elu else tf.nn.relu
+  #activation = tf.nn.elu if config.elu else tf.nn.relu
+  if config.elu:
+    activation = tf.nn.elu
+  elif config.activation == "leakyRelu":
+    activation = leakyRelu
+  elif config.activation == "prelu":
+    activation = parametric_relu
+  elif config.activation == "tanh2":
+    activation = tanh2
+  elif config.activation == "shift_elu":
+    activation = shift_elu
+  else:
+    activation = tf.nn.relu
   weight_initializer = tf.orthogonal_initializer if config.orthogonal_initializer else tf.uniform_unit_scaling_initializer
   bias_initializer = tf.zeros_initializer
   model = seq2seq_model.Seq2SeqModel(
@@ -504,6 +540,10 @@ class Struct(object):
     self.__dict__.update(entries)
     if not self.__dict__.get('iaf'):
       self.__dict__.update({ "iaf": False })
+    if not self.__dict__.get('activation'):
+      self.__dict__.update({ "activation": "elu" })
+    if not self.__dict__.get('elu'):
+      self.__dict__.update({ "elu": False })
 
 
 def main(_):

@@ -75,11 +75,20 @@ from tensorflow.python.ops import variable_scope
 from tensorflow.python.util import nest
 import tensorflow as tf
 import pdb
-from .distributions import DiagonalGaussian
+import numpy as np
+from utils.distributions import DiagonalGaussian
 
 # TODO(ebrevdo): Remove once _linear is fully deprecated.
 linear = rnn_cell._linear  # pylint: disable=protected-access
 
+
+def parametric_relu(_x):
+  with tf.variable_scope("prelu"):
+    alphas = tf.get_variable('alpha', _x.get_shape()[-1],
+      initializer=tf.constant_initializer(-0.5), dtype=tf.float32)
+    pos = tf.nn.relu(_x)
+    neg = alphas * (_x - abs(_x)) * 0.5
+  return pos + neg
 
 def _extract_argmax_and_embed(embedding, output_projection=None,
                               update_embedding=True):
@@ -1491,20 +1500,20 @@ def sample(mean, logvar, batch_size, latent_dim, dtype=None):
 
   return tf.map_fn(lambda x: atomic_sample_f(x), mean_logvar)
 
-def iaf_sample(mean, logvar, latent_dim, Lambda, dtype=dtype):
-  prior = DiagonalGaussian(0, 0)
-  posterior = DiagonalGaussian(means[j], logvars[j])
+def iaf_sample(means, logvars, latent_dim, Lambda, dtype=None):
+  prior = DiagonalGaussian(tf.zeros_like(means), tf.zeros_like(logvars))
+  posterior = DiagonalGaussian(means, logvars)
   z = posterior.sample
 
   logqs = posterior.logps(z)
-  L = tf.get_variable("inverse_cholesky", [latent_dim, latent_dim])
+  L = tf.get_variable("inverse_cholesky", [latent_dim, latent_dim], dtype=dtype)
   diag_one = tf.ones([latent_dim])
   tf.matrix_set_diag(L, diag_one)
-  mask = tf.constant(np.tril(np.ones([latent_dim,latent_dim])))
+  mask = np.tril(np.ones([latent_dim,latent_dim]))
   L = L * mask
-  latent_vector = tf.matmul(L,z)
+  latent_vector = tf.matmul(z, L)
   logps = prior.logps(latent_vector)
-  kl_cost = logqs - logps
+  kl_cost = logps - logqs
   kl_ave = tf.reduce_mean(kl_cost, [0])
   kl_ave = tf.reduce_sum(tf.maximum(kl_ave, Lambda))
 

@@ -283,7 +283,7 @@ class Seq2SeqModel(object):
     if iaf:
       sample_f = iaf_sample_f
 
-    if annealing and not lower_bound_KL:
+    if not probabilistic or annealing and not lower_bound_KL:
       kl_f = seq2seq.KL_divergence
     else:
       kl_f = lower_bounded_kl_f
@@ -299,7 +299,7 @@ class Seq2SeqModel(object):
       self.outputs, self.losses, self.KL_divergences = seq2seq.variational_decoder_with_buckets(
           self.means, self.logvars, self.decoder_inputs, targets,
           self.target_weights, buckets, decoder,
-          latent_dec_f, kl_f, sample_f, iaf=False,
+          latent_dec_f, kl_f, sample_f, iaf=iaf,
           softmax_loss_function=softmax_loss_function)
     else:
       self.outputs, self.losses = seq2seq.autoencoder_with_buckets(
@@ -386,7 +386,7 @@ class Seq2SeqModel(object):
     last_target = self.decoder_inputs[decoder_size].name
     input_feed[last_target] = np.zeros([self.batch_size], dtype=np.int32)
     if not self.probabilistic:
-      input_feed[self.logvars[bucket_id]] = np.zeros([self.batch_size, self.latent_dim], dtype=np.int32)
+      input_feed[self.logvars[bucket_id]] = np.zeros([self.batch_size, self.latent_dim], dtype=np.float32)
 
     # Output feed: depends on whether we do a backward step or not.
     if not forward_only:
