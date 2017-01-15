@@ -90,7 +90,8 @@ def maybe_create_statistics(config):
     stats['hyperparameters'] = config.__dict__
     stats['model_name'] = FLAGS.model_dir
     stats['train_perplexity'] = {}
-    stats['train_KL_divergence'] = {}
+    stats['train_KL_objs'] = {}
+    stats['train_KL_costs'] = {}
     stats['eval_KL_divergence'] = {}
     stats['eval_perplexity'] = {}
     stats['wall_time'] = {}
@@ -198,6 +199,7 @@ def create_model(session, config, forward_only):
       weight_initializer=weight_initializer,
       bias_initializer=bias_initializer,
       iaf=config.iaf,
+      report_true_kl=config.report_true_kl,
       dtype=dtype)
   ckpt = tf.train.get_checkpoint_state(FLAGS.model_dir)
   if not FLAGS.new and ckpt and tf.train.checkpoint_exists(ckpt.model_checkpoint_path):
@@ -268,10 +270,12 @@ def train(config, encode_decode_config, interp_config):
 
     # This is the training loop.
     step_time, loss = 0.0, 0.0
-    KL_loss = 0.0
+    KL_objs = 0.0
+    KL_costs = 0.0
     current_step = model.global_step.eval()
     step_loss_summaries = []
-    step_KL_loss_summaries = []
+    step_KL_obj_summaries = []
+    step_KL_cost_summaries = []
     overall_start_time = time.time()
     while True:
       # Choose a bucket according to data distribution. We pick a random number
@@ -284,13 +288,20 @@ def train(config, encode_decode_config, interp_config):
       start_time = time.time()
       encoder_inputs, decoder_inputs, target_weights = model.get_batch(
           train_set, bucket_id)
-      _, step_loss, step_KL_loss, _ = model.step(sess, encoder_inputs, decoder_inputs,
+      if model.report_true_kl:
+        _, step_loss, step_KL_objs, step_KL_costs = model.step(sess, encoder_inputs, decoder_inputs,
                                    target_weights, bucket_id, False)
+      else:
+        _, step_loss, step_KL_objs, _ = model.step(sess, encoder_inputs, decoder_inputs,
+                                   target_weights, bucket_id, False)
+        step_KL_costs = step_KL_objs
       step_time += (time.time() - start_time) / config.steps_per_checkpoint
       step_loss_summaries.append(tf.Summary(value=[tf.Summary.Value(tag="step loss", simple_value=float(step_loss))]))
-      step_KL_loss_summaries.append(tf.Summary(value=[tf.Summary.Value(tag="KL step loss", simple_value=float(step_KL_loss))]))
+      step_KL_obj_summaries.append(tf.Summary(value=[tf.Summary.Value(tag="KL step objs", simple_value=float(step_KL_objs))]))
+      step_KL_cost_summaries.append(tf.Summary(value=[tf.Summary.Value(tag="KL step costs", simple_value=float(step_KL_costs))]))
       loss += step_loss / config.steps_per_checkpoint
-      KL_loss += step_KL_loss / config.steps_per_checkpoint
+      KL_objs += step_KL_objs / config.steps_per_checkpoint
+      KL_costs += step_KL_costs / config.steps_per_checkpoint
       current_step = model.global_step.eval()
 
       # Once in a while, we save checkpoint, print statistics, and run evals.
@@ -301,9 +312,12 @@ def train(config, encode_decode_config, interp_config):
                "%.2f" % (model.global_step.eval(), model.learning_rate.eval(),
                          step_time, perplexity))
 
-        print ("global step %d learning rate %.4f step-time %.2f KL divergence "
+        print ("global step %d learning rate %.4f step-time %.2f KL objectives "
                "%.2f" % (model.global_step.eval(), model.learning_rate.eval(),
-                         step_time, KL_loss))
+                         step_time, KL_objs))
+        print ("global step %d learning rate %.4f step-time %.2f KL costs "
+               "%.2f" % (model.global_step.eval(), model.learning_rate.eval(),
+                         step_time, KL_costs))
         wall_time = time.time() - overall_start_time
         print("time passed: {0}".format(wall_time))
         stats['wall_time'][str(current_step)] = wall_time
@@ -317,18 +331,23 @@ def train(config, encode_decode_config, interp_config):
         # Add perplexity, KL divergence to summary and stats.
         perp_summary = tf.Summary(value=[tf.Summary.Value(tag="train perplexity", simple_value=perplexity)])
         train_writer.add_summary(perp_summary, current_step)
-        KL_loss_summary = tf.Summary(value=[tf.Summary.Value(tag="KL divergence", simple_value=KL_loss)])
-        train_writer.add_summary(KL_loss_summary, current_step)
+        KL_obj_summary = tf.Summary(value=[tf.Summary.Value(tag="KL objs", simple_value=KL_objs)])
+        KL_cost_summary = tf.Summary(value=[tf.Summary.Value(tag="KL costs", simple_value=KL_costs)])
+        train_writer.add_summary(KL_cost_summary, current_step)
         for i, summary in enumerate(step_loss_summaries):
           train_writer.add_summary(summary, current_step - 200 + i)
         step_loss_summaries = []
-        for i, summary in enumerate(step_KL_loss_summaries):
+        for i, summary in enumerate(step_KL_obj_summaries):
           train_writer.add_summary(summary, current_step - 200 + i)
-        step_KL_loss_summaries = []
+        step_KL_obj_summaries = []
+        for i, summary in enumerate(step_KL_cost_summaries):
+          train_writer.add_summary(summary, current_step - 200 + i)
+        step_KL_cost_summaries = []
 
 
         stats['train_perplexity'][str(current_step)] = perplexity
-        stats['train_KL_divergence'][str(current_step)] = KL_loss
+        stats['train_KL_objs'][str(current_step)] = KL_objs
+        stats['train_KL_costs'][str(current_step)] = KL_costs
 
         if config.annealing:
           if current_step >= config.kl_rate_rise_time and model.kl_rate.eval() < 1:
@@ -338,7 +357,7 @@ def train(config, encode_decode_config, interp_config):
         # Save checkpoint and zero timer and loss.
         checkpoint_path = os.path.join(FLAGS.model_dir, FLAGS.model_name + ".ckpt")
         model.saver.save(sess, checkpoint_path, global_step=model.global_step)
-        step_time, loss, KL_loss = 0.0, 0.0, 0.0
+        step_time, loss, KL_costs, KL_objs = 0.0, 0.0, 0.0, 0.0
 
         # Run evals on development set and print their perplexity.
         eval_losses = []
@@ -544,6 +563,8 @@ class Struct(object):
       self.__dict__.update({ "activation": "elu" })
     if not self.__dict__.get('elu'):
       self.__dict__.update({ "elu": False })
+    if not self.__dict__.get('report_true_kl'):
+      self.__dict__.update({ "report_true_kl": False })
 
 
 def main(_):

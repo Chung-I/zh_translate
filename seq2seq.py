@@ -1336,14 +1336,19 @@ def sequence_loss(logits, targets, weights,
       return cost
 
 
-def lower_bounded_KL_divergence(means, logvars, M, Lambda):
+def lower_bounded_KL_divergence(means, logvars, M, Lambda, report_true_kl=False):
   print("latent splits: {0}, Lambda: {1}".format(M, Lambda))
-  splitted_means = tf.split(1, M, means)
-  splitted_logvars = tf.split(1, M, logvars)
   def kl_f(mean,logvar):
     return -0.5 * tf.reduce_sum((logvar - tf.square(mean) - tf.exp(logvar) + 1.0), 1)
-
-  return math_ops.add_n([tf.maximum(tf.reduce_mean(kl_f(mean, logvar)), Lambda)  for (mean, logvar) in zip(splitted_means, splitted_logvars)])
+  splitted_means = tf.split(1, M, means)
+  splitted_logvars = tf.split(1, M, logvars)
+  kl_costs = [tf.reduce_mean(kl_f(mean, logvar)) for (mean, logvar) in zip(splitted_means, splitted_logvars)]
+  kl_obj = math_ops.add_n([tf.maximum(kl, Lambda) for kl in kl_costs])
+  kl_cost = math_ops.add_n(kl_costs)
+  if report_true_kl:
+    return kl_obj, kl_cost
+  else:
+    return kl_obj
 
 def KL_divergence(means, logvars):
   return -0.5 * tf.reduce_sum((logvars - tf.square(means) -
@@ -1701,7 +1706,7 @@ def variational_encoder_with_buckets(encoder_inputs, buckets, encoder,
 def variational_decoder_with_buckets(means, logvars, decoder_inputs,
                        targets, weights,
                        buckets, decoder, latent_dec, kl_f, sample, iaf=False,
-                       softmax_loss_function=None,
+                       report_true_kl=False, softmax_loss_function=None,
                        per_example_loss=False, name=None):
   """Create a sequence-to-sequence model with support for bucketing.
   """
@@ -1715,7 +1720,8 @@ def variational_decoder_with_buckets(means, logvars, decoder_inputs,
   all_inputs = decoder_inputs + targets + weights
   losses = []
   outputs = []
-  KL_divergences = []
+  KL_objs = []
+  KL_costs = []
   print("variational_decoder_with_buckets")
   with ops.name_scope(name, "variational_decoder_with_buckets", all_inputs):
     for j, bucket in enumerate(buckets):
@@ -1725,14 +1731,22 @@ def variational_decoder_with_buckets(means, logvars, decoder_inputs,
           latent_vector, kl_cost = sample(means[j], logvars[j])
         else:
           latent_vector = sample(means[j], logvars[j])
-          kl_cost = kl_f(means[j], logvars[j])
+          if report_true_kl:
+            kl_obj, kl_cost = kl_f(means[j], logvars[j])
+          else:
+            kl_obj = kl_f(means[j], logvars[j])
+
         decoder_initial_state = latent_dec(latent_vector)
 
         bucket_outputs, _ = decoder(decoder_initial_state, decoder_inputs[:bucket[1]])
         outputs.append(bucket_outputs)
         total_size = math_ops.add_n(weights[:bucket[1]])
         total_size += 1e-12 
-        KL_divergences.append(tf.reduce_mean(kl_cost / total_size))
+        if report_true_kl:
+          KL_costs.append(tf.reduce_mean(kl_cost / total_size))
+          KL_objs.append(tf.reduce_mean(kl_obj / total_size))
+        else:
+          KL_objs.append(tf.reduce_mean(kl_obj / total_size))
         if per_example_loss:
           losses.append(sequence_loss_by_example(
               outputs[-1], targets[:bucket[1]], weights[:bucket[1]],
@@ -1741,5 +1755,7 @@ def variational_decoder_with_buckets(means, logvars, decoder_inputs,
           losses.append(sequence_loss(
               outputs[-1], targets[:bucket[1]], weights[:bucket[1]],
               softmax_loss_function=softmax_loss_function))
-
-  return outputs, losses, KL_divergences
+  if report_true_kl:
+    return outputs, losses, KL_objs, KL_costs
+  else:
+    return outputs, losses, KL_objs

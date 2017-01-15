@@ -81,6 +81,7 @@ class Seq2SeqModel(object):
                weight_initializer=None,
                bias_initializer=None,
                iaf=False,
+               report_true_kl=False,
                dtype=tf.float32):
     """Create the model.
 
@@ -112,6 +113,7 @@ class Seq2SeqModel(object):
     self.batch_size = batch_size
     self.word_dropout_keep_prob = word_dropout_keep_prob
     self.Lambda = Lambda
+    self.report_true_kl = report_true_kl
     feed_previous = feed_previous or forward_only
     if Lambda_annealing:
       self.Lambda = tf.Variable(
@@ -225,7 +227,7 @@ class Seq2SeqModel(object):
 
     def lower_bounded_kl_f(mean, logvar):
       return seq2seq.lower_bounded_KL_divergence(
-        mean, logvar, latent_splits, self.Lambda)
+        mean, logvar, latent_splits, self.Lambda, report_true_kl)
 
     def iaf_sample_f(means, logvars):
       return seq2seq.iaf_sample(
@@ -280,6 +282,8 @@ class Seq2SeqModel(object):
     targets = [self.decoder_inputs[i + 1]
                for i in xrange(len(self.decoder_inputs) - 1)]
 
+    if not probabilistic:
+      sample_f = lambda mean, logvar: mean
     if iaf:
       sample_f = iaf_sample_f
 
@@ -296,11 +300,19 @@ class Seq2SeqModel(object):
       self.means, self.logvars = seq2seq.variational_encoder_with_buckets(
           self.encoder_inputs, buckets, encoder_f, enc_latent_f,
           softmax_loss_function=softmax_loss_function)
-      self.outputs, self.losses, self.KL_divergences = seq2seq.variational_decoder_with_buckets(
-          self.means, self.logvars, self.decoder_inputs, targets,
-          self.target_weights, buckets, decoder,
-          latent_dec_f, kl_f, sample_f, iaf=iaf,
-          softmax_loss_function=softmax_loss_function)
+      if report_true_kl:
+        pdb.set_trace()
+        self.outputs, self.losses, self.KL_objs, self.KL_costs = seq2seq.variational_decoder_with_buckets(
+            self.means, self.logvars, self.decoder_inputs, targets,
+            self.target_weights, buckets, decoder,
+            latent_dec_f, kl_f, sample_f, iaf=iaf, report_true_kl=report_true_kl,
+            softmax_loss_function=softmax_loss_function)
+      else:
+        self.outputs, self.losses, self.KL_objs = seq2seq.variational_decoder_with_buckets(
+            self.means, self.logvars, self.decoder_inputs, targets,
+            self.target_weights, buckets, decoder,
+            latent_dec_f, kl_f, sample_f, iaf=iaf, report_true_kl=report_true_kl,
+            softmax_loss_function=softmax_loss_function)
     else:
       self.outputs, self.losses = seq2seq.autoencoder_with_buckets(
           self.encoder_inputs, self.decoder_inputs, targets,
@@ -321,11 +333,11 @@ class Seq2SeqModel(object):
       for b in xrange(len(buckets)):
         if probabilistic:
           if annealing:
-            annealed_KL_divergence = self.kl_rate * self.KL_divergences[b]
+            annealed_KL_divergence = self.kl_rate * self.KL_objs[b]
             total_loss = self.losses[b] + annealed_KL_divergence
           else:
             print("kl_divergence taken into account")
-            total_loss = self.losses[b] + self.KL_divergences[b]
+            total_loss = self.losses[b] + self.KL_objs[b]
         else:
             total_loss = self.losses[b]
         gradients = tf.gradients(total_loss, params)
@@ -393,15 +405,20 @@ class Seq2SeqModel(object):
       output_feed = [self.updates[bucket_id],  # Update Op that does SGD.
                      self.gradient_norms[bucket_id],  # Gradient norm.
                      self.losses[bucket_id],
-                     self.KL_divergences[bucket_id]]  # Loss for this batch.
+                     self.KL_objs[bucket_id]]
+      if self.report_true_kl:
+        output_feed.append(self.KL_costs[bucket_id])  # Loss for this batch.
     else:
-      output_feed = [self.losses[bucket_id], self.KL_divergences[bucket_id]]  # Loss for this batch.
+      output_feed = [self.losses[bucket_id], self.KL_objs[bucket_id]]  # Loss for this batch.
       for l in xrange(decoder_size):  # Output logits.
         output_feed.append(self.outputs[bucket_id][l])
 
     outputs = session.run(output_feed, input_feed)
     if not forward_only:
-      return outputs[1], outputs[2], outputs[3], None  # Gradient norm, loss, KL divergence, no outputs.
+      if self.report_true_kl:
+        return outputs[1], outputs[2], outputs[3], outputs[4]  # Gradient norm, loss, KL divergence, no outputs.
+      else:
+        return outputs[1], outputs[2], outputs[3], None  # Gradient norm, loss, KL divergence, no outputs.
     else:
         return None, outputs[0], outputs[1], outputs[2:]  # no gradient norm, loss, KL divergence, outputs.
 
